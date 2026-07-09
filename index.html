@@ -945,6 +945,77 @@
   }
   #compass svg { width: 100%; height: 100%; }
 
+  /* ============ ZOOM CONTROLS ============ */
+  /* Click/hold buttons + draggable slider. Needed because host pages
+     (e.g. SharePoint) capture the mouse wheel for page scroll. */
+  #zoom-ctl {
+    position: absolute;
+    right: 18px;
+    bottom: 92px;            /* stacks above the compass */
+    width: 44px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 6px;
+    z-index: 6;
+    user-select: none;
+  }
+  .zoom-btn {
+    width: 34px;
+    height: 34px;
+    background: rgba(26, 26, 26, 0.92);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    color: var(--gold);
+    font-family: var(--m);
+    font-size: 18px;
+    line-height: 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: background 0.12s, border-color 0.12s;
+  }
+  .zoom-btn:hover { background: #2A2A2A; border-color: var(--gold); }
+  .zoom-btn:active { background: #333; }
+  #zoom-slider-wrap {
+    height: 110px;
+    width: 34px;
+    background: rgba(26, 26, 26, 0.92);
+    border: 1px solid var(--border);
+    border-radius: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  #zoom-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 96px;             /* becomes vertical height after rotation */
+    height: 4px;
+    background: var(--border);
+    border-radius: 2px;
+    outline: none;
+    transform: rotate(-90deg);
+    cursor: pointer;
+  }
+  #zoom-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: var(--gold);
+    border: 2px solid #1A1A1A;
+    cursor: pointer;
+  }
+  #zoom-slider::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--gold);
+    border: 2px solid #1A1A1A;
+    cursor: pointer;
+  }
+
   /* ============ SCALE BAR ============ */
   #scale-bar {
     position: absolute;
@@ -1349,6 +1420,9 @@
     #info { min-width: 0; max-width: calc(100vw - 20px); left: 10px; right: 10px; bottom: 10px; }
     #legend { display: none; }
     #compass { bottom: 170px; right: 16px; width: 36px; height: 36px; }
+    #zoom-ctl { bottom: 216px; right: 16px; }
+    #zoom-slider-wrap { height: 84px; }
+    #zoom-slider { width: 72px; }
     #header h1 { font-size: 14px; }
     #header .atom-orn { display: none; }
     #header .signature .sig-name { font-size: 9px; }
@@ -1378,6 +1452,14 @@
 
 <div id="canvas-wrap">
 
+<div id="zoom-ctl" title="Zoom (buttons or drag the slider)">
+  <div class="zoom-btn" id="zoom-in" title="Zoom in">+</div>
+  <div id="zoom-slider-wrap"><input type="range" id="zoom-slider" min="0" max="100" step="0.5" value="50" title="Drag to zoom"></div>
+  <div class="zoom-btn" id="zoom-out" title="Zoom out">&#8722;</div>
+</div>
+<!-- Floating measurement label (inside canvas-wrap so its canvas-relative
+     coordinates from updateMeasureLabel resolve correctly) -->
+<div id="measure-label"></div>
 <div id="compass">
   <svg viewBox="0 0 48 48">
     <circle cx="24" cy="24" r="22" fill="rgba(26,26,26,0.7)" stroke="#C4A046" stroke-width="0.6" opacity="0.6"/>
@@ -1486,6 +1568,7 @@
   <button class="btn" id="btn-rings"><span class="key">S</span>setback rings</button>
   <button class="btn dc-btn" id="btn-dc"><span class="key">D</span>+ data center</button>
   <button class="btn" id="btn-measure"><span class="key">M</span>measure distance</button>
+  <button class="btn" id="btn-measure-area"><span class="key">A</span>measure area</button>
   <button class="btn" id="btn-kml"><span class="key">K</span>upload kml parcel</button>
   <button class="btn" id="btn-walk"><span class="key">W</span>walk-around</button>
 </div>
@@ -1527,9 +1610,6 @@
 <!-- Rail collapse toggles — chevron handles pinned to each rail's inner edge -->
 <div id="lrail-toggle" class="rail-toggle" title="Toggle reactor selector panel">&#9665;</div>
 <div id="rrail-toggle" class="rail-toggle" title="Toggle controls panel">&#9655;</div>
-
-<!-- Floating measurement distance label -->
-<div id="measure-label"></div>
 
 <!-- Measure mode overlay banner -->
 <div id="measure-banner">
@@ -3389,6 +3469,71 @@ if (IN_IFRAME) {
   window.addEventListener('blur', disarmZoom);
 }
 
+// ---------- ZOOM BUTTONS + SLIDER ----------
+// Host pages (SharePoint et al.) capture the mouse wheel for page scroll,
+// so wheel zoom is unreliable in embeds. These controls dolly the camera
+// directly along the view axis, independent of the wheel.
+(function initZoomControls() {
+  const MIN_D = controls.minDistance, MAX_D = controls.maxDistance;
+  const slider = document.getElementById('zoom-slider');
+
+  function getDistance() {
+    return camera.position.distanceTo(controls.target);
+  }
+  function setDistance(d) {
+    d = Math.max(MIN_D, Math.min(MAX_D, d));
+    const offset = camera.position.clone().sub(controls.target).setLength(d);
+    camera.position.copy(controls.target).add(offset);
+    controls.update();
+  }
+  // Log-scale mapping distance <-> slider [0..100]; 0 = zoomed IN (near),
+  // 100 = zoomed OUT (far). Slider is rotated so top = in, bottom = out.
+  const LOG_MIN = Math.log(MIN_D), LOG_MAX = Math.log(MAX_D);
+  function distToSlider(d) {
+    return (Math.log(d) - LOG_MIN) / (LOG_MAX - LOG_MIN) * 100;
+  }
+  function sliderToDist(v) {
+    return Math.exp(LOG_MIN + (v / 100) * (LOG_MAX - LOG_MIN));
+  }
+
+  let sliderDriving = false;
+  slider.addEventListener('input', () => {
+    sliderDriving = true;
+    setDistance(sliderToDist(parseFloat(slider.value)));
+    sliderDriving = false;
+  });
+  // Keep slider synced when zoom changes any other way (wheel, buttons,
+  // reset view, model switches). OrbitControls fires 'change' on update.
+  controls.addEventListener('change', () => {
+    if (!sliderDriving) slider.value = distToSlider(getDistance());
+  });
+  slider.value = distToSlider(getDistance());
+
+  // Buttons: single click steps 20%; press-and-hold zooms continuously.
+  function bindZoomButton(id, factor) {
+    const el = document.getElementById(id);
+    let holdTimer = null, repeatTimer = null;
+    function step() { setDistance(getDistance() * factor); }
+    function start(e) {
+      e.preventDefault();
+      step();
+      holdTimer = setTimeout(() => {
+        repeatTimer = setInterval(step, 60);
+      }, 350);
+    }
+    function stop() {
+      clearTimeout(holdTimer); clearInterval(repeatTimer);
+      holdTimer = repeatTimer = null;
+    }
+    el.addEventListener('mousedown', start);
+    el.addEventListener('touchstart', start, { passive: false });
+    ['mouseup','mouseleave','touchend','touchcancel'].forEach(ev =>
+      el.addEventListener(ev, stop));
+  }
+  bindZoomButton('zoom-in', 0.8);
+  bindZoomButton('zoom-out', 1.25);
+})();
+
 // ---------- LIGHTING ----------
 scene.add(new THREE.AmbientLight(0xffffff, 0.38));
 const sun = new THREE.DirectionalLight(0xfff2d8, 0.9);
@@ -3527,9 +3672,13 @@ const originalMaterials = new Map();
 // Measurement tool state (must be hoisted — clearPlant calls clearMeasurement
 // during initial scene rebuild, before the later declarations would execute)
 let measureMode = false;
+let measureKind = 'distance';   // 'distance' | 'area'
 let measurePoints = [];
 let measureLineMesh = null;
 let measurePointMeshes = [];
+let measureAreaMesh = null;     // translucent fill for closed polygons
+let measurePreviewLine = null;  // rubber-band line from last point to cursor
+let measureAreaClosed = false;  // true once the polygon is closed
 
 // KML parcel state (also hoisted — SMR model swaps re-run fit test against
 // the currently-loaded parcel, which means loadSmr needs access to these)
@@ -5674,10 +5823,11 @@ const REG_REFERENCES = [
 ];
 
 function raycastGround(clientX, clientY) {
-  const m = new THREE.Vector2(
-    (clientX / canvasWrap.clientWidth) * 2 - 1,
-    -(clientY / canvasWrap.clientHeight) * 2 + 1
-  );
+  // BUGFIX: must convert client coords relative to the canvas element.
+  // Raw clientX/clientY divided by canvas size ignores the left rail +
+  // header offset, which shifted every measurement/drag click up-left.
+  const ndc = ndcFromClient(clientX, clientY);
+  const m = new THREE.Vector2(ndc.x, ndc.y);
   raycaster.setFromCamera(m, camera);
   const hitPoint = new THREE.Vector3();
   if (raycaster.ray.intersectPlane(GROUND_PLANE, hitPoint)) {
@@ -5693,6 +5843,18 @@ function clearMeasurement() {
     measureLineMesh.material.dispose();
     measureLineMesh = null;
   }
+  if (measureAreaMesh) {
+    scene.remove(measureAreaMesh);
+    measureAreaMesh.geometry.dispose();
+    measureAreaMesh.material.dispose();
+    measureAreaMesh = null;
+  }
+  if (measurePreviewLine) {
+    scene.remove(measurePreviewLine);
+    measurePreviewLine.geometry.dispose();
+    measurePreviewLine.material.dispose();
+    measurePreviewLine = null;
+  }
   for (const m of measurePointMeshes) {
     scene.remove(m);
     m.geometry.dispose();
@@ -5700,8 +5862,19 @@ function clearMeasurement() {
   }
   measurePointMeshes = [];
   measurePoints = [];
+  measureAreaClosed = false;
   document.getElementById('measure-label').classList.remove('visible');
 }
+
+// Area reference comparisons (acres) — annotate area measurements with
+// relatable scale context, same idea as the linear REG_REFERENCES.
+const AREA_REFERENCES = [
+  { ac: 1.3,  label: 'football field (incl. end zones)', tol: 0.35 },
+  { ac: 5,    label: 'typical city block',               tol: 1.5 },
+  { ac: 20,   label: 'big-box store + parking',          tol: 5 },
+  { ac: 100,  label: 'small utility solar farm',         tol: 25 },
+  { ac: 843,  label: 'Central Park',                     tol: 160 },
+];
 
 function addMeasurePoint(worldPoint) {
   // Visual marker at the click point
@@ -5715,12 +5888,133 @@ function addMeasurePoint(worldPoint) {
   measurePointMeshes.push(marker);
   measurePoints.push(worldPoint.clone());
 
-  if (measurePoints.length === 1) {
-    document.getElementById('measure-msg').textContent = 'Click second point';
-  } else if (measurePoints.length === 2) {
-    drawMeasurement();
-    // Exit measure mode after second click — the measurement persists on screen
-    setMeasureMode(false);
+  if (measureKind === 'distance') {
+    if (measurePoints.length === 1) {
+      document.getElementById('measure-msg').textContent = 'Click second point';
+    } else if (measurePoints.length === 2) {
+      drawMeasurement();
+      // Exit measure mode after second click — the measurement persists
+      setMeasureMode(false);
+    }
+  } else {
+    // AREA mode — keep collecting points; polyline redraws each click
+    drawAreaOutline(false);
+    const n = measurePoints.length;
+    document.getElementById('measure-msg').textContent =
+      n < 3 ? `Point ${n} placed — need at least 3`
+            : 'Click the first marker (or double-click / Enter) to close the area';
+  }
+}
+
+// Handles a confirmed measure-mode click. For area mode, a click near the
+// FIRST marker closes the polygon instead of adding a point.
+function handleMeasureClick(e) {
+  if (measureKind === 'area' && measurePoints.length >= 3) {
+    const first = measurePoints[0];
+    const v = new THREE.Vector3(first.x, 0, first.z).project(camera);
+    const px = clientPxFromNdc(v.x, v.y);
+    const dpx = Math.hypot(e.clientX - px.left, e.clientY - px.top);
+    if (dpx < 14) { closeMeasureArea(); return; }
+  }
+  const p = raycastGround(e.clientX, e.clientY);
+  if (p) addMeasurePoint(p);
+}
+
+// Outline for area mode: dashed loop through the points (open while
+// collecting, closed once the polygon is finished).
+function drawAreaOutline(closed) {
+  if (measureLineMesh) {
+    scene.remove(measureLineMesh);
+    measureLineMesh.geometry.dispose();
+    measureLineMesh.material.dispose();
+    measureLineMesh = null;
+  }
+  if (measurePoints.length < 2) return;
+  const pts = measurePoints.map(p => new THREE.Vector3(p.x, 2, p.z));
+  if (closed) pts.push(pts[0].clone());
+  const lineGeom = new THREE.BufferGeometry().setFromPoints(pts);
+  const lineMat = new THREE.LineDashedMaterial({
+    color: 0xC4A046, linewidth: 2, dashSize: 4, gapSize: 3, transparent: true, opacity: 0.9,
+  });
+  measureLineMesh = new THREE.Line(lineGeom, lineMat);
+  measureLineMesh.computeLineDistances();
+  scene.add(measureLineMesh);
+}
+
+// Close the polygon: fill it, compute the area, show the label, exit mode.
+function closeMeasureArea() {
+  if (measureKind !== 'area' || measurePoints.length < 3) return;
+  // Drop consecutive near-duplicate points (e.g. from a double-click)
+  measurePoints = measurePoints.filter((p, i, arr) =>
+    i === 0 || p.distanceTo(arr[i - 1]) > 0.5);
+  if (measurePoints.length < 3) { clearMeasurement(); setMeasureMode(false); return; }
+  // Remove any surplus marker meshes left by deduped points
+  while (measurePointMeshes.length > measurePoints.length) {
+    const m = measurePointMeshes.pop();
+    scene.remove(m); m.geometry.dispose(); m.material.dispose();
+  }
+  measureAreaClosed = true;
+  removePreviewLine();
+  drawAreaOutline(true);
+
+  // Translucent fill via triangulation on the ground plane
+  const pts2 = measurePoints.map(p => new THREE.Vector2(p.x, p.z));
+  const tris = THREE.ShapeUtils.triangulateShape(pts2, []);
+  const pos = [];
+  for (const t of tris) {
+    for (const idx of t) {
+      pos.push(pts2[idx].x, 1.5, pts2[idx].y);
+    }
+  }
+  const fillGeom = new THREE.BufferGeometry();
+  fillGeom.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3));
+  fillGeom.computeVertexNormals();
+  const fillMat = new THREE.MeshBasicMaterial({
+    color: 0xC4A046, transparent: true, opacity: 0.18, side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  measureAreaMesh = new THREE.Mesh(fillGeom, fillMat);
+  scene.add(measureAreaMesh);
+
+  setMeasureMode(false);   // measurement persists on screen
+}
+
+// Shoelace area on the x/z plane, in square meters (world units = meters)
+function polygonAreaSqMeters(points) {
+  let area = 0;
+  for (let i = 0; i < points.length; i++) {
+    const a = points[i], b = points[(i + 1) % points.length];
+    area += a.x * b.z - b.x * a.z;
+  }
+  return Math.abs(area) / 2;
+}
+
+// Rubber-band preview from the last placed point to the cursor
+function updateMeasurePreview(clientX, clientY) {
+  if (!measureMode || measurePoints.length === 0) return;
+  const cursor = raycastGround(clientX, clientY);
+  if (!cursor) return;
+  const last = measurePoints[measurePoints.length - 1];
+  const pts = [new THREE.Vector3(last.x, 2, last.z), new THREE.Vector3(cursor.x, 2, cursor.z)];
+  if (!measurePreviewLine) {
+    const g = new THREE.BufferGeometry().setFromPoints(pts);
+    const m = new THREE.LineDashedMaterial({
+      color: 0xC4A046, dashSize: 3, gapSize: 3, transparent: true, opacity: 0.45,
+    });
+    measurePreviewLine = new THREE.Line(g, m);
+    measurePreviewLine.computeLineDistances();
+    scene.add(measurePreviewLine);
+  } else {
+    measurePreviewLine.geometry.setFromPoints(pts);
+    measurePreviewLine.computeLineDistances();
+  }
+}
+function removePreviewLine() {
+  if (measurePreviewLine) {
+    scene.remove(measurePreviewLine);
+    measurePreviewLine.geometry.dispose();
+    measurePreviewLine.material.dispose();
+    measurePreviewLine = null;
   }
 }
 
@@ -5742,7 +6036,41 @@ function drawMeasurement() {
 
 function updateMeasureLabel() {
   const labelEl = document.getElementById('measure-label');
-  if (measurePoints.length !== 2) {
+
+  // ----- AREA label (closed polygon) -----
+  if (measureAreaClosed && measurePoints.length >= 3) {
+    const sqm = polygonAreaSqMeters(measurePoints);
+    const acres = sqm / 4046.86;
+    const sqft = sqm * 10.7639;
+    let primary;
+    if (acres >= 1) {
+      primary = `${acres >= 100 ? Math.round(acres).toLocaleString() : acres.toFixed(1)} acres`;
+    } else {
+      primary = `${Math.round(sqft).toLocaleString()} sq ft`;
+    }
+    const secondary = `${Math.round(sqm).toLocaleString()} m² · ` +
+      (acres >= 1 ? `${Math.round(sqft).toLocaleString()} sq ft` : `${acres.toFixed(2)} acres`);
+    let ref = null;
+    for (const r of AREA_REFERENCES) {
+      if (Math.abs(acres - r.ac) <= r.tol) { ref = r; break; }
+    }
+    labelEl.innerHTML = `<div class="primary">${primary}</div><div class="secondary">${secondary}</div>` +
+      (ref ? `<div class="note">≈ ${ref.label}</div>` : '');
+    // Label at polygon centroid
+    let cx = 0, cz = 0;
+    for (const p of measurePoints) { cx += p.x; cz += p.z; }
+    cx /= measurePoints.length; cz /= measurePoints.length;
+    const mid = new THREE.Vector3(cx, 6, cz);
+    mid.project(camera);
+    if (mid.z > 1 || mid.z < -1) { labelEl.classList.remove('visible'); return; }
+    labelEl.style.left = ((mid.x + 1) / 2 * canvasWrap.clientWidth) + 'px';
+    labelEl.style.top = ((1 - (mid.y + 1) / 2) * canvasWrap.clientHeight) + 'px';
+    labelEl.classList.add('visible');
+    return;
+  }
+
+  // ----- DISTANCE label (two points) -----
+  if (measurePoints.length !== 2 || measureKind !== 'distance') {
     labelEl.classList.remove('visible');
     return;
   }
@@ -5750,7 +6078,6 @@ function updateMeasureLabel() {
   const dx = p2.x - p1.x, dz = p2.z - p1.z;
   const distMeters = Math.sqrt(dx * dx + dz * dz);
   const distFeet = distMeters * METERS_TO_FEET;
-  const distAcres = (distMeters * distMeters) / 4046.86; // diagonal², reasonable for small radii
 
   // Find nearest regulatory reference
   let ref = null;
@@ -5785,20 +6112,26 @@ function updateMeasureLabel() {
   labelEl.classList.add('visible');
 }
 
-function setMeasureMode(on) {
+function setMeasureMode(on, kind) {
   measureMode = on;
+  if (on && kind) measureKind = kind;
   document.body.classList.toggle('measuring', on);
-  document.getElementById('btn-measure').classList.toggle('active', on);
+  document.getElementById('btn-measure').classList.toggle('active', on && measureKind === 'distance');
+  document.getElementById('btn-measure-area').classList.toggle('active', on && measureKind === 'area');
   if (on) {
     // Starting fresh — clear previous measurement
     clearMeasurement();
-    document.getElementById('measure-msg').textContent = 'Click first point on the ground';
+    document.getElementById('measure-msg').textContent =
+      measureKind === 'area'
+        ? 'Click points to outline an area (3+ points)'
+        : 'Click first point on the ground';
     // Deselect any selected structure
     clearSelection();
-  }
-  // When turning off mid-measurement (< 2 points), abort
-  if (!on && measurePoints.length < 2) {
-    clearMeasurement();
+  } else {
+    removePreviewLine();
+    // Turning off mid-measurement: abort incomplete measurements
+    if (measureKind === 'distance' && measurePoints.length < 2) clearMeasurement();
+    if (measureKind === 'area' && !measureAreaClosed) clearMeasurement();
   }
 }
 
@@ -5887,8 +6220,7 @@ renderer.domElement.addEventListener('pointerup', (e) => {
 
   // Branch: measure mode vs selection mode
   if (measureMode) {
-    const p = raycastGround(e.clientX, e.clientY);
-    if (p) addMeasurePoint(p);
+    handleMeasureClick(e);
     return;
   }
 
@@ -5930,6 +6262,7 @@ renderer.domElement.addEventListener('pointermove', (e) => {
   mouse.y = _ndc_mouse.y;
   if (measureMode) {
     renderer.domElement.style.cursor = 'crosshair';
+    updateMeasurePreview(e.clientX, e.clientY);
     return;
   }
   raycaster.setFromCamera(mouse, camera);
@@ -7157,7 +7490,18 @@ document.getElementById('btn-labels').addEventListener('click', toggleLabels);
 document.getElementById('btn-fence').addEventListener('click', toggleFences);
 document.getElementById('btn-rings').addEventListener('click', toggleRings);
 document.getElementById('btn-dc').addEventListener('click', toggleDC);
-document.getElementById('btn-measure').addEventListener('click', () => setMeasureMode(!measureMode));
+document.getElementById('btn-measure').addEventListener('click', () =>
+  setMeasureMode(!(measureMode && measureKind === 'distance'), 'distance'));
+document.getElementById('btn-measure-area').addEventListener('click', () =>
+  setMeasureMode(!(measureMode && measureKind === 'area'), 'area'));
+
+// Double-click closes an area polygon (the dblclick's extra point is
+// deduped inside closeMeasureArea)
+renderer.domElement.addEventListener('dblclick', () => {
+  if (measureMode && measureKind === 'area' && measurePoints.length >= 3) {
+    closeMeasureArea();
+  }
+});
 document.getElementById('btn-walk').addEventListener('click', toggleWalk);
 
 document.addEventListener('keydown', (e) => {
@@ -7174,7 +7518,9 @@ document.addEventListener('keydown', (e) => {
   else if (k === 'f') toggleFences();
   else if (k === 's') toggleRings();
   else if (k === 'd') toggleDC();
-  else if (k === 'm') setMeasureMode(!measureMode);
+  else if (k === 'm') setMeasureMode(!(measureMode && measureKind === 'distance'), 'distance');
+  else if (k === 'a') setMeasureMode(!(measureMode && measureKind === 'area'), 'area');
+  else if (e.key === 'Enter' && measureMode && measureKind === 'area' && measurePoints.length >= 3) closeMeasureArea();
   else if (k === 'k') document.getElementById('kml-file-input').click();
   else if (k === 'w') toggleWalk();
   else if (k === 'c') setMode(mode === 'single' ? 'compare' : 'single');
